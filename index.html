@@ -167,6 +167,14 @@ let shields = [];
 let particles = [];
 let mysteryShip = null;
 
+// Power-up system
+let powerUps = {
+  speed: 0,        // frames remaining for faster movement
+  doubleShot: 0,   // frames remaining for 2 bullets
+  shield: 0        // frames remaining for invulnerability
+};
+let powerUpMessage = null; // { text: string, timer: number }
+
 // Timing & movement
 let invaderStepTime = 545;     // ms between steps (smoothly decreases over 999 levels)
 let lastInvaderStep = 0;
@@ -352,6 +360,7 @@ function resetLevel(newLevel = false) {
   bombs = [];
   particles = [];
   mysteryShip = null;
+  resetPowerUps();
   
   createInvaders();
   createShields();
@@ -380,6 +389,32 @@ function resetGame() {
   level = 1;
   resetLevel(false);
   gameState = 'playing';
+}
+
+function resetPowerUps() {
+  powerUps.speed = 0;
+  powerUps.doubleShot = 0;
+  powerUps.shield = 0;
+  powerUpMessage = null;
+}
+
+function grantRandomPowerUp() {
+  const roll = Math.random();
+  const duration = 60 * 18; // ~18 seconds at 60fps
+
+  if (roll < 0.33) {
+    // Speed Boost
+    powerUps.speed = duration;
+    powerUpMessage = { text: 'SPEED UP!', timer: 90 };
+  } else if (roll < 0.66) {
+    // Double Shot
+    powerUps.doubleShot = duration;
+    powerUpMessage = { text: 'DOUBLE FIRE!', timer: 90 };
+  } else {
+    // Shield (temporary immunity)
+    powerUps.shield = duration;
+    powerUpMessage = { text: 'SHIELD!', timer: 90 };
+  }
 }
 
 // Find alive invaders
@@ -508,8 +543,12 @@ function updateMystery() {
 
 // Player shooting
 function shoot() {
-  if (!player.alive || !canShoot || playerBullets.length > 0) return;
-  
+  if (!player.alive || !canShoot) return;
+
+  const maxBullets = (powerUps.doubleShot > 0) ? 2 : 1;
+
+  if (playerBullets.length >= maxBullets) return;
+
   playerBullets.push({
     x: player.x + PLAYER_WIDTH / 2 - 2,
     y: player.y - 7,
@@ -559,16 +598,20 @@ function updateBullets() {
     }
     if (hit) continue;
     
-    // Hit mystery
+    // Hit mystery ship (now grants a power-up!)
     if (mysteryShip &&
         b.x < mysteryShip.x + mysteryShip.w && b.x + b.w > mysteryShip.x &&
         b.y < mysteryShip.y + mysteryShip.h && b.y + b.h > mysteryShip.y) {
       
-      score += mysteryShip.points;
-      spawnParticles(mysteryShip.x + mysteryShip.w/2, mysteryShip.y + mysteryShip.h/2, 22, '#ffcc00');
+      score += 100;
+      spawnParticles(mysteryShip.x + mysteryShip.w/2, mysteryShip.y + mysteryShip.h/2, 26, '#ffdd55');
       playerBullets.splice(i, 1);
       canShoot = true;
       playExplosionSound();
+      
+      // Grant random power-up
+      grantRandomPowerUp();
+      
       mysteryShip = null;
       if (score > highScore) highScore = score;
       continue;
@@ -603,8 +646,9 @@ function updateBombs() {
       continue;
     }
     
-    // Hit player
+    // Hit player (ignore if shield power-up is active)
     if (player.alive && player.respawnTimer <= 0 &&
+        powerUps.shield <= 0 &&
         b.x < player.x + PLAYER_WIDTH && b.x + b.w > player.x &&
         b.y < player.y + PLAYER_HEIGHT && b.y + b.h > player.y) {
       
@@ -644,8 +688,9 @@ function playerHit() {
   spawnParticles(player.x + PLAYER_WIDTH/2, player.y + PLAYER_HEIGHT/2, 28, '#ff5555');
   playPlayerDeath();
   
-  // Clear bombs on death
+  // Clear bombs + power-ups on death
   bombs = [];
+  resetPowerUps();
   
   if (lives <= 0) {
     setTimeout(endGame, 650);
@@ -715,11 +760,14 @@ function update(now) {
   
   // Player movement
   if (player.alive && player.respawnTimer <= 0) {
+    let speed = PLAYER_SPEED;
+    if (powerUps.speed > 0) speed *= 1.65; // Speed boost active
+
     if ((keys['ArrowLeft'] || keys['a'] || keys['A']) && player.x > 18) {
-      player.x -= PLAYER_SPEED;
+      player.x -= speed;
     }
     if ((keys['ArrowRight'] || keys['d'] || keys['D']) && player.x < WIDTH - PLAYER_WIDTH - 18) {
-      player.x += PLAYER_SPEED;
+      player.x += speed;
     }
   }
   if (player.respawnTimer > 0) player.respawnTimer--;
@@ -748,7 +796,17 @@ function update(now) {
   
   // Particles
   updateParticles();
-  
+
+  // Power-up timers
+  if (powerUps.speed > 0) powerUps.speed--;
+  if (powerUps.doubleShot > 0) powerUps.doubleShot--;
+  if (powerUps.shield > 0) powerUps.shield--;
+
+  if (powerUpMessage) {
+    powerUpMessage.timer--;
+    if (powerUpMessage.timer <= 0) powerUpMessage = null;
+  }
+
   // Win check
   checkWin();
   
@@ -776,6 +834,10 @@ function draw() {
     ctx.textAlign = 'center';
     ctx.fillText('FARAGE', WIDTH/2, 172);
     ctx.fillText('INVADERS', WIDTH/2, 224);
+
+    ctx.font = '11px "Press Start 2P"';
+    ctx.fillStyle = '#888';
+    ctx.fillText('Game by @_SignalNotNoise', WIDTH/2, 262);
     
     // Blinking start prompt
     if (Math.floor(frame / 22) % 2 === 0) {
@@ -826,8 +888,24 @@ function draw() {
   // Lives
   ctx.textAlign = 'left';
   ctx.fillText('LIVES', 36, HEIGHT - 22);
+
+  // Small credit during gameplay
+  ctx.font = '9px "Press Start 2P"';
+  ctx.fillStyle = '#444';
+  ctx.fillText('by @_SignalNotNoise', WIDTH - 155, HEIGHT - 8);
   for (let i = 0; i < lives; i++) {
     drawPlayerShip(120 + i * 32, HEIGHT - 36, 0.7);
+  }
+
+  // Power-up message (big text when collected)
+  if (powerUpMessage) {
+    ctx.fillStyle = '#ffff00';
+    ctx.font = 'bold 20px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    const alpha = Math.min(1, powerUpMessage.timer / 30);
+    ctx.globalAlpha = alpha;
+    ctx.fillText(powerUpMessage.text, WIDTH / 2, 90);
+    ctx.globalAlpha = 1;
   }
   
   // === SHIELDS ===
@@ -908,6 +986,16 @@ function draw() {
     const flash = player.respawnTimer > 0 && Math.floor(frame / 3) % 2 === 0;
     if (!flash) {
       drawPlayerShip(player.x, player.y, 1.0);
+
+      // Shield visual effect
+      if (powerUps.shield > 0) {
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(player.x + PLAYER_WIDTH/2, player.y + PLAYER_HEIGHT/2, 32, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
     }
   }
   
@@ -966,6 +1054,10 @@ function draw() {
     ctx.fillStyle = '#aaa';
     ctx.fillText('PRESS R TO PLAY AGAIN', WIDTH/2, HEIGHT/2 + 78);
     ctx.fillText('PRESS SPACE FOR TITLE', WIDTH/2, HEIGHT/2 + 102);
+
+    ctx.font = '10px "Press Start 2P"';
+    ctx.fillStyle = '#666';
+    ctx.fillText('Game by @_SignalNotNoise', WIDTH/2, HEIGHT - 28);
   }
 
   // === VICTORY SCREEN (Beaten all 999 levels) ===
@@ -993,6 +1085,10 @@ function draw() {
     ctx.fillStyle = '#aaa';
     ctx.fillText('PRESS R TO PLAY AGAIN', WIDTH/2, HEIGHT/2 + 110);
     ctx.fillText('PRESS SPACE FOR TITLE', WIDTH/2, HEIGHT/2 + 132);
+
+    ctx.font = '10px "Press Start 2P"';
+    ctx.fillStyle = '#666';
+    ctx.fillText('Game by @_SignalNotNoise', WIDTH/2, HEIGHT/2 + 160);
   }
 }
 
