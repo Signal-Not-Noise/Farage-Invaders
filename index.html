@@ -175,6 +175,10 @@ let powerUps = {
 };
 let powerUpMessage = null; // { text: string, timer: number }
 
+// Collectible power-up drops from Mystery Ship
+let powerUpDrops = [];
+let isAdvancingLevel = false; // Prevents level from skipping
+
 // Timing & movement
 let invaderStepTime = 545;     // ms between steps (smoothly decreases over 999 levels)
 let lastInvaderStep = 0;
@@ -360,7 +364,9 @@ function resetLevel(newLevel = false) {
   bombs = [];
   particles = [];
   mysteryShip = null;
+  powerUpDrops = [];
   resetPowerUps();
+  isAdvancingLevel = false;
   
   createInvaders();
   createShields();
@@ -387,6 +393,7 @@ function resetGame() {
   score = 0;
   lives = 3;
   level = 1;
+  isAdvancingLevel = false;
   resetLevel(false);
   gameState = 'playing';
 }
@@ -403,15 +410,41 @@ function grantRandomPowerUp() {
   const duration = 60 * 18; // ~18 seconds at 60fps
 
   if (roll < 0.33) {
-    // Speed Boost
     powerUps.speed = duration;
     powerUpMessage = { text: 'SPEED UP!', timer: 90 };
   } else if (roll < 0.66) {
-    // Double Shot
     powerUps.doubleShot = duration;
     powerUpMessage = { text: 'DOUBLE FIRE!', timer: 90 };
   } else {
-    // Shield (temporary immunity)
+    powerUps.shield = duration;
+    powerUpMessage = { text: 'SHIELD!', timer: 90 };
+  }
+}
+
+// Spawn a collectible power-up drop from the Mystery Ship
+function spawnPowerUpDrop(x, y) {
+  const types = ['speed', 'doubleShot', 'shield'];
+  const type = types[Math.floor(Math.random() * types.length)];
+
+  powerUpDrops.push({
+    x: x,
+    y: y,
+    type: type,
+    vy: 1.6 // falling speed
+  });
+}
+
+// Activate a collected power-up (supports stacking)
+function activatePowerUp(type) {
+  const duration = 60 * 18; // ~18 seconds
+
+  if (type === 'speed') {
+    powerUps.speed = duration;
+    powerUpMessage = { text: 'SPEED UP!', timer: 90 };
+  } else if (type === 'doubleShot') {
+    powerUps.doubleShot = duration;
+    powerUpMessage = { text: 'DOUBLE FIRE!', timer: 90 };
+  } else if (type === 'shield') {
     powerUps.shield = duration;
     powerUpMessage = { text: 'SHIELD!', timer: 90 };
   }
@@ -608,10 +641,10 @@ function updateBullets() {
       playerBullets.splice(i, 1);
       canShoot = true;
       playExplosionSound();
-      
-      // Grant random power-up
-      grantRandomPowerUp();
-      
+
+      // Drop a collectible power-up instead of granting instantly
+      spawnPowerUpDrop(mysteryShip.x + mysteryShip.w / 2, mysteryShip.y + mysteryShip.h / 2);
+
       mysteryShip = null;
       if (score > highScore) highScore = score;
       continue;
@@ -681,33 +714,36 @@ function updateBombs() {
 function playerHit() {
   if (!player.alive) return;
   
-  lives--;
+  lives = Math.max(0, lives - 1);
   player.alive = false;
-  player.respawnTimer = 90;
+  player.respawnTimer = 45;    // Shorter death pause (~0.75 seconds)
+  isAdvancingLevel = false;    // Prevent any stuck level advancing state
   
   spawnParticles(player.x + PLAYER_WIDTH/2, player.y + PLAYER_HEIGHT/2, 28, '#ff5555');
   playPlayerDeath();
   
-  // Clear bombs + power-ups on death
+  // Clear bombs + power-ups + drops on death
   bombs = [];
+  powerUpDrops = [];
   resetPowerUps();
+  canShoot = true;   // Allow shooting again after respawn
   
+  // If no lives left, show Game Over after a short dramatic pause
   if (lives <= 0) {
-    setTimeout(endGame, 650);
-  } else {
     setTimeout(() => {
       if (gameState === 'playing') {
-        player.alive = true;
-        player.x = WIDTH / 2 - PLAYER_WIDTH / 2;
-        player.respawnTimer = 45; // brief invulnerability
+        endGame();
       }
-    }, 620);
+    }, 650);
   }
+  // Note: Respawn is now handled in the main update() loop (frame-driven)
+  // This is much more stable when dying multiple times in a row.
 }
 
 // End game
 function endGame() {
   gameState = 'gameover';
+  isAdvancingLevel = false;
   if (score > highScore) {
     highScore = score;
     localStorage.setItem('farageInvadersHigh', highScore);
@@ -717,13 +753,16 @@ function endGame() {
 
 // Check win condition
 function checkWin() {
-  if (getAliveInvaders().length === 0) {
+  if (getAliveInvaders().length === 0 && !isAdvancingLevel) {
+    isAdvancingLevel = true;
+
     if (level < MAX_LEVEL) {
-      // Advance to next level (up to 999)
+      // Advance to next level (up to 999) — only once
       setTimeout(() => {
         if (gameState === 'playing') {
           resetLevel(true);
         }
+        isAdvancingLevel = false;
       }, 420);
     } else {
       // Player has beaten all 999 levels!
@@ -731,10 +770,10 @@ function checkWin() {
         if (gameState === 'playing') {
           gameState = 'victory';
           playLevelUp();
-          // Big celebratory sound
           setTimeout(() => playLevelUp(), 180);
           setTimeout(() => playLevelUp(), 380);
         }
+        isAdvancingLevel = false;
       }, 520);
     }
   }
@@ -755,11 +794,12 @@ function updateParticles() {
 // Main update
 function update(now) {
   if (gameState !== 'playing') return;
+
+  try {
+    frame++;
   
-  frame++;
-  
-  // Player movement
-  if (player.alive && player.respawnTimer <= 0) {
+  // Player movement - always allowed as long as alive (even during respawn flash)
+  if (player.alive) {
     let speed = PLAYER_SPEED;
     if (powerUps.speed > 0) speed *= 1.65; // Speed boost active
 
@@ -771,6 +811,14 @@ function update(now) {
     }
   }
   if (player.respawnTimer > 0) player.respawnTimer--;
+
+  // Frame-driven respawn — this is the reliable way to handle multiple deaths
+  if (!player.alive && player.respawnTimer <= 0 && lives > 0 && gameState === 'playing') {
+    player.alive = true;
+    player.x = WIDTH / 2 - PLAYER_WIDTH / 2;
+    player.respawnTimer = 40;   // Shorter invulnerability flash period after respawn
+    isAdvancingLevel = false;
+  }
   
   // Shooting
   if ((keys[' '] || keys['Spacebar']) && canShoot) {
@@ -807,6 +855,36 @@ function update(now) {
     if (powerUpMessage.timer <= 0) powerUpMessage = null;
   }
 
+  // Update collectible power-up drops (with extra safety)
+  if (Array.isArray(powerUpDrops)) {
+    for (let i = powerUpDrops.length - 1; i >= 0; i--) {
+      const drop = powerUpDrops[i];
+      if (!drop) {
+        powerUpDrops.splice(i, 1);
+        continue;
+      }
+
+      drop.y += drop.vy || 1.6;
+
+      // Remove if fallen off screen
+      if (drop.y > HEIGHT + 20) {
+        powerUpDrops.splice(i, 1);
+        continue;
+      }
+
+      // Player collects the drop
+      if (player.alive &&
+          drop.x > player.x && drop.x < player.x + PLAYER_WIDTH &&
+          drop.y > player.y && drop.y < player.y + PLAYER_HEIGHT) {
+
+        activatePowerUp(drop.type);
+        powerUpDrops.splice(i, 1);
+      }
+    }
+  } else {
+    powerUpDrops = [];
+  }
+
   // Win check
   checkWin();
   
@@ -814,12 +892,17 @@ function update(now) {
   if (Math.random() < 0.006 && bombs.length < 3 + level) {
     // small chance for extra bomb
   }
+  } catch (err) {
+    console.error("CRASH in update loop:", err);
+    // Prevents the whole game from freezing so we can see the real error
+  }
 }
 
 // Draw everything
 function draw() {
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  try {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
   
   // Scanlines / retro overlay (very subtle)
   ctx.fillStyle = 'rgba(0, 255, 65, 0.025)';
@@ -1014,6 +1097,27 @@ function draw() {
     ctx.fillRect(b.x + 1, b.y + 2, 2, 2);
     ctx.fillStyle = '#ffaa66';
   }
+
+  // === POWER-UP DROPS (collectibles) ===
+  ctx.font = 'bold 11px "Press Start 2P"';
+  for (const drop of powerUpDrops) {
+    if (drop.type === 'speed') {
+      ctx.fillStyle = '#00ff88';
+      ctx.fillRect(drop.x - 9, drop.y - 9, 18, 18);
+      ctx.fillStyle = '#000000';
+      ctx.fillText('S', drop.x - 4, drop.y + 4);
+    } else if (drop.type === 'doubleShot') {
+      ctx.fillStyle = '#ffaa00';
+      ctx.fillRect(drop.x - 9, drop.y - 9, 18, 18);
+      ctx.fillStyle = '#000000';
+      ctx.fillText('2X', drop.x - 8, drop.y + 4);
+    } else if (drop.type === 'shield') {
+      ctx.fillStyle = '#00ccff';
+      ctx.fillRect(drop.x - 9, drop.y - 9, 18, 18);
+      ctx.fillStyle = '#000000';
+      ctx.fillText('SH', drop.x - 8, drop.y + 4);
+    }
+  }
   
   // === PARTICLES ===
   for (const p of particles) {
@@ -1089,6 +1193,9 @@ function draw() {
     ctx.font = '10px "Press Start 2P"';
     ctx.fillStyle = '#666';
     ctx.fillText('Game by @_SignalNotNoise', WIDTH/2, HEIGHT/2 + 160);
+  }
+  } catch (err) {
+    console.error("CRASH in draw loop:", err);
   }
 }
 
