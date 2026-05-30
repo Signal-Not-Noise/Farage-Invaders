@@ -9,17 +9,21 @@
 <meta name="theme-color" content="#00ff41">
 
 <!-- Open Graph -->
+<!-- Open Graph / Social Preview - Updated for Signal_not-Noise -->
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://signal-not-noise.github.io/Farage-Invaders/">
 <meta property="og:title" content="Farage Invaders">
 <meta property="og:description" content="Classic Space Invaders. The invaders have been replaced with Farage.">
-<meta property="og:image" content="bowling-head.jpg">
+<meta property="og:image" content="https://signal-not-noise.github.io/Farage-Invaders/preview.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:url" content="https://signal-not-noise.github.io/Farage-Invaders/">
 <meta name="twitter:title" content="Farage Invaders">
 <meta name="twitter:description" content="The 1978 arcade classic... starring the one and only Farage.">
+<meta name="twitter:image" content="https://signal-not-noise.github.io/Farage-Invaders/preview.jpg">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&amp;display=swap');
   
@@ -144,9 +148,10 @@ const INVADER_H_GAP = 10;
 const INVADER_V_GAP = 9;
 const SHIELD_COUNT = 4;
 const SHIELD_BLOCK_SIZE = 4;
+const MAX_LEVEL = 999;
 
 // State
-let gameState = 'title'; // title, playing, paused, gameover
+let gameState = 'title'; // title, playing, paused, gameover, victory
 let score = 0;
 let highScore = parseInt(localStorage.getItem('farageInvadersHigh') || '0', 10);
 let lives = 3;
@@ -163,12 +168,12 @@ let particles = [];
 let mysteryShip = null;
 
 // Timing & movement
-let invaderStepTime = 520;     // ms between steps (decreases)
+let invaderStepTime = 545;     // ms between steps (smoothly decreases over 999 levels)
 let lastInvaderStep = 0;
 let invaderDirection = 1;      // 1 right, -1 left
-let invaderDropDistance = 12;
+let invaderDropDistance = 11;  // increases gradually with level (faster descent on high levels)
 let lastBombTime = 0;
-let bombInterval = 1100;
+let bombInterval = 1070;
 let lastMysteryTime = 0;
 let mysteryInterval = 22000;
 
@@ -333,8 +338,10 @@ function createShields() {
 // Reset a level
 function resetLevel(newLevel = false) {
   if (newLevel) {
-    level++;
-    playLevelUp();
+    if (level < MAX_LEVEL) {
+      level++;
+      playLevelUp();
+    }
   }
   
   player.x = WIDTH / 2 - PLAYER_WIDTH / 2;
@@ -350,8 +357,15 @@ function resetLevel(newLevel = false) {
   createShields();
   
   invaderDirection = 1;
-  invaderStepTime = Math.max(140, 520 - (level - 1) * 65);
-  bombInterval = Math.max(520, 1100 - (level - 1) * 85);
+
+  // Smooth fractional difficulty scaling across 999 levels
+  const diff = (level - 1) / 999;
+  invaderStepTime = Math.max(34, 545 - diff * 505);
+  bombInterval = Math.max(265, 1070 - diff * 795);
+
+  // Make invaders drop slightly faster on higher levels (chosen option #2)
+  invaderDropDistance = 11 + Math.floor(diff * 9);   // 11px on level 1 → 20px on level 999
+
   stepToneIndex = 0;
   
   lastInvaderStep = performance.now();
@@ -417,11 +431,12 @@ function stepInvaders() {
   
   playStepSound();
   
-  // Increase speed as fewer invaders remain (classic behavior)
+  // Classic "speed up as you kill them" — now with smooth 999-level scaling
   const remaining = alive.length;
   const total = INVADER_ROWS * INVADER_COLS;
   const progress = 1 - (remaining / total);
-  invaderStepTime = Math.max(65, 520 - (level - 1) * 65 - progress * 280);
+  const diff = (level - 1) / 999;
+  invaderStepTime = Math.max(32, 540 - diff * 495 - progress * 85);
 }
 
 // Invaders fire bombs
@@ -443,8 +458,9 @@ function invadersShoot() {
   const candidates = Object.values(byCol);
   if (!candidates.length) return;
   
-  // Fire from 1-2 random bottom invaders
-  const numShots = Math.random() < 0.35 + level * 0.04 ? 2 : 1;
+  // Gradual increase in number of bombs over 999 levels
+  const bombChance = 0.28 + (level - 1) / 999 * 0.55;
+  const numShots = Math.random() < bombChance ? 2 : 1;
   for (let i = 0; i < numShots && candidates.length; i++) {
     const idx = Math.floor(Math.random() * candidates.length);
     const shooter = candidates.splice(idx, 1)[0];
@@ -454,7 +470,7 @@ function invadersShoot() {
       y: shooter.y + shooter.height + 2,
       w: 5,
       h: 9,
-      vy: BOMB_SPEED + (level - 1) * 0.25
+      vy: BOMB_SPEED + Math.min(2.2, (level - 1) / 999 * 2.8)
     });
     playBombSound();
   }
@@ -657,12 +673,25 @@ function endGame() {
 // Check win condition
 function checkWin() {
   if (getAliveInvaders().length === 0) {
-    // Next level
-    setTimeout(() => {
-      if (gameState === 'playing') {
-        resetLevel(true);
-      }
-    }, 420);
+    if (level < MAX_LEVEL) {
+      // Advance to next level (up to 999)
+      setTimeout(() => {
+        if (gameState === 'playing') {
+          resetLevel(true);
+        }
+      }, 420);
+    } else {
+      // Player has beaten all 999 levels!
+      setTimeout(() => {
+        if (gameState === 'playing') {
+          gameState = 'victory';
+          playLevelUp();
+          // Big celebratory sound
+          setTimeout(() => playLevelUp(), 180);
+          setTimeout(() => playLevelUp(), 380);
+        }
+      }, 520);
+    }
   }
 }
 
@@ -792,7 +821,7 @@ function draw() {
   ctx.fillText(highScore.toString().padStart(5, '0'), WIDTH - 36, 48);
   
   ctx.textAlign = 'center';
-  ctx.fillText('LEVEL ' + level, WIDTH / 2, 38);
+  ctx.fillText('LEVEL ' + level + ' / ' + MAX_LEVEL, WIDTH / 2, 38);
   
   // Lives
   ctx.textAlign = 'left';
@@ -938,6 +967,33 @@ function draw() {
     ctx.fillText('PRESS R TO PLAY AGAIN', WIDTH/2, HEIGHT/2 + 78);
     ctx.fillText('PRESS SPACE FOR TITLE', WIDTH/2, HEIGHT/2 + 102);
   }
+
+  // === VICTORY SCREEN (Beaten all 999 levels) ===
+  if (gameState === 'victory') {
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+    ctx.fillStyle = '#00ff41';
+    ctx.font = 'bold 26px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText('999 LEVELS', WIDTH/2, HEIGHT/2 - 58);
+
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 38px "Press Start 2P"';
+    ctx.fillText('COMPLETE', WIDTH/2, HEIGHT/2 - 12);
+
+    ctx.fillStyle = '#00ff41';
+    ctx.font = '16px "Press Start 2P"';
+    ctx.fillText('FARAGE HAS BEEN DEFEATED', WIDTH/2, HEIGHT/2 + 38);
+
+    ctx.font = '14px "Press Start 2P"';
+    ctx.fillText('FINAL SCORE: ' + score.toString().padStart(5, '0'), WIDTH/2, HEIGHT/2 + 72);
+
+    ctx.font = '12px "Press Start 2P"';
+    ctx.fillStyle = '#aaa';
+    ctx.fillText('PRESS R TO PLAY AGAIN', WIDTH/2, HEIGHT/2 + 110);
+    ctx.fillText('PRESS SPACE FOR TITLE', WIDTH/2, HEIGHT/2 + 132);
+  }
 }
 
 // Classic player ship drawing
@@ -995,7 +1051,7 @@ window.addEventListener('keydown', (e) => {
       resetGame();
     } else if (gameState === 'playing') {
       shoot();
-    } else if (gameState === 'gameover') {
+    } else if (gameState === 'gameover' || gameState === 'victory') {
       initAudio();
       resetGame();
     }
@@ -1011,7 +1067,7 @@ window.addEventListener('keydown', (e) => {
     }
   }
   
-  if ((e.key.toLowerCase() === 'r') && (gameState === 'gameover' || gameState === 'playing')) {
+  if ((e.key.toLowerCase() === 'r') && (gameState === 'gameover' || gameState === 'playing' || gameState === 'victory')) {
     e.preventDefault();
     initAudio();
     resetGame();
@@ -1038,7 +1094,7 @@ canvas.addEventListener('touchstart', (e) => {
     resetGame();
     return;
   }
-  if (gameState === 'gameover') {
+  if (gameState === 'gameover' || gameState === 'victory') {
     resetGame();
     return;
   }
@@ -1067,7 +1123,7 @@ canvas.addEventListener('mousedown', (e) => {
     resetGame();
   } else if (gameState === 'playing' && player.alive) {
     shoot();
-  } else if (gameState === 'gameover') {
+  } else if (gameState === 'gameover' || gameState === 'victory') {
     resetGame();
   }
 });
